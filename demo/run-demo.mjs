@@ -8,7 +8,7 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -28,10 +28,8 @@ if (!process.env.OPENROUTER_API_KEY) {
   process.exit(1);
 }
 
-const source = await readFile(join(here, "src", "cache.ts"), "utf8");
-
-// Sent as a whole file rather than a diff: this is new code, and it is how the
-// tool gets used in practice when reviewing something freshly written.
+// The server reads the file itself via `paths`, which is the point: the demo
+// never loads cache.ts, and neither would a calling agent.
 const transport = new StdioClientTransport({
   command: "node",
   args: [join(root, "dist", "index.js")],
@@ -53,7 +51,8 @@ const response = await client.callTool(
   {
     name: "review_diff",
     arguments: {
-      diff: `// File: src/cache.ts (new)\n\n${source}`,
+      paths: ["demo/src/cache.ts"],
+      cwd: root,
       language: "TypeScript",
       focus:
         "correctness under concurrency, batching boundaries, and long-running " +

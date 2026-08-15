@@ -67,9 +67,24 @@ try {
 
   const tool = tools.find((t) => t.name === "review_diff");
   const props = tool?.inputSchema?.properties ?? {};
-  check("diff is a declared input", "diff" in props);
-  check("context is a declared input", "context" in props);
-  check("diff is required", (tool?.inputSchema?.required ?? []).includes("diff"));
+  for (const field of ["paths", "git_ref", "cwd", "diff", "context", "focus"]) {
+    check(`${field} is a declared input`, field in props);
+  }
+  check(
+    "path sources are steered toward in the description",
+    /paths|git_ref/.test(tool?.description ?? ""),
+  );
+
+  // Omitting every source must be a clean error, not a crash or an empty review.
+  const noSource = await request("tools/call", {
+    name: "review_diff",
+    arguments: {},
+  });
+  check("missing source is rejected", noSource.result?.isError === true);
+  check(
+    "missing-source message names the options",
+    /paths.*git_ref|git_ref.*paths/s.test(noSource.result?.content?.[0]?.text ?? ""),
+  );
 
   // A bad key must surface as a tool error, not crash the server.
   const call = await request("tools/call", {

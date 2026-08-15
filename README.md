@@ -70,6 +70,39 @@ Or let your agent call it on its own — the tool description tells it to reach 
 
 Passing `context` (type definitions, called functions, schemas the diff depends on but doesn't contain) meaningfully cuts false positives. The reviewer can't reason about code it can't see.
 
+## It costs your agent almost no context
+
+The tool takes **file paths or a git ref**, and the server reads the code itself. Your agent spends a filename; the file never enters its context window. Only the findings come back.
+
+```jsonc
+{ "paths": ["src/cache.ts"] }          // server reads the file
+{ "git_ref": "staged" }                // server runs git diff --cached
+{ "git_ref": "HEAD~1", "cwd": "..." }  // any ref or range
+{ "diff": "..." }                      // literal text, when it isn't on disk
+```
+
+For a 500-line file the difference is roughly:
+
+| Approach | Tokens in your agent's context |
+|---|---|
+| Agent reads and reviews it itself | ~7,000 (file + reasoning) |
+| Pasting the file into `diff` | ~7,500 (file + findings) |
+| **Reviewing by `paths`** | **~500 (findings only)** |
+
+The reasoning happens inside a model with a 1M context window that costs nothing, instead of inside the context you're paying for.
+
+Exactly one source may be given per call.
+
+### What it refuses to read
+
+Because this server **transmits whatever it reads** to an external API, reading is constrained:
+
+- **Credentials are refused outright** — `.env*`, `.pem`/`.key`/`.p12`, `id_rsa`, `.npmrc`, `.netrc`, `.git-credentials`, `credentials.json`, anything under `.ssh/` or `.aws/`.
+- **Paths must stay inside `cwd`.** Escaping it needs `SECOND_OPINION_ALLOW_OUTSIDE_CWD=1`.
+- **`git_ref` must be a revision, not a flag.** `--name-only` would silently review filenames instead of code; `--output=` writes to disk.
+
+This isn't a privilege boundary — your agent could read those files itself. The difference is that this server *sends* them somewhere. A mistaken path, or a prompt-injected one from a hostile repository, would exfiltrate a key rather than merely print it.
+
 ## What it looks for
 
 The prompt targets the failure modes characteristic of *generated* code:
@@ -103,8 +136,21 @@ Style, naming, and formatting are explicitly out of scope. You have a linter.
 
 ```bash
 npm install
-npm run build
-node scripts/smoke.mjs   # protocol-level tests, no API calls
+npm test        # 29 tests: source resolution, throttling, MCP protocol. No API calls.
+```
+
+Review something from the command line:
+
+```bash
+npm run review -- src/openrouter.ts
+npm run review -- --git staged
+npm run review -- --git HEAD~1 --focus "error handling"
+```
+
+Run the scored demo (uses one API request):
+
+```bash
+node demo/run-demo.mjs
 ```
 
 ## License

@@ -10,7 +10,10 @@ export interface Finding {
 }
 
 export interface ReviewRequest {
-  diff: string;
+  /** The code under review, already resolved from whatever source. */
+  content: string;
+  /** What was reviewed, echoed in the report header. */
+  description: string;
   context?: string;
   focus?: string;
   language?: string;
@@ -82,7 +85,7 @@ function buildUserPrompt(request: ReviewRequest): string {
     parts.push(`Surrounding context (not part of the change):\n\n${request.context}`);
   }
 
-  parts.push(`Review this change:\n\n${request.diff}`);
+  parts.push(`Review this change:\n\n${request.content}`);
   return parts.join("\n\n---\n\n");
 }
 
@@ -130,7 +133,7 @@ function parseResponse(raw: string): { findings: Finding[]; summary: string } {
 
 const SEVERITY_ORDER = { critical: 0, major: 1, minor: 2 } as const;
 
-export async function reviewDiff(request: ReviewRequest): Promise<string> {
+export async function reviewCode(request: ReviewRequest): Promise<string> {
   const raw = await complete({
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -141,15 +144,20 @@ export async function reviewDiff(request: ReviewRequest): Promise<string> {
   });
 
   const { findings, summary } = parseResponse(raw);
-  return formatFindings(findings, summary);
+  return formatFindings(findings, summary, request.description);
 }
 
-function formatFindings(findings: Finding[], summary: string): string {
+function formatFindings(
+  findings: Finding[],
+  summary: string,
+  description: string,
+): string {
   const model = activeModel();
+  const header = `## Second opinion — ${description}\n_Reviewer: ${model}_`;
 
   if (findings.length === 0) {
     return [
-      `## Second opinion (${model})`,
+      header,
       "",
       "**No behavioral defects found.**",
       summary ? `\n${summary}` : "",
@@ -163,7 +171,7 @@ function formatFindings(findings: Finding[], summary: string): string {
   );
 
   const lines: string[] = [
-    `## Second opinion (${model})`,
+    header,
     "",
     `**${sorted.length} finding${sorted.length === 1 ? "" : "s"}.** ${summary}`,
     "",
