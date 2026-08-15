@@ -2,7 +2,7 @@
 
 **Your AI reviews its own code. That's the bug.**
 
-An MCP server that routes code review to a *different* model than the one that wrote the code.
+An MCP server that routes code review to a *different* model than the one that wrote the code — pairing Claude Code with NVIDIA's Nemotron 3 Ultra.
 
 ---
 
