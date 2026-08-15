@@ -9,11 +9,16 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readFile, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
+
+// pathToFileURL is required here: on Windows a bare absolute path is not a
+// valid ESM specifier ("c:" reads as an unsupported URL scheme).
+const { loadDotEnv } = await import(pathToFileURL(join(root, "dist", "env.js")).href);
+loadDotEnv();
 
 if (!process.env.OPENROUTER_API_KEY) {
   console.error(

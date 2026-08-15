@@ -1,6 +1,6 @@
 # Demo result
 
-Reviewer: `nvidia/nemotron-3-ultra-550b-a55b:free`  ·  Elapsed: 85.7s  ·  Run: 2026-08-15T13:28:31.829Z
+Reviewer: `nvidia/nemotron-3-ultra-550b-a55b:free`  ·  Elapsed: 147.1s  ·  Run: 2026-08-15T13:45:17.631Z
 
 Target: `demo/src/cache.ts` — 5 planted defects, ground truth in `PLANTED_BUGS.md`.
 
@@ -8,49 +8,42 @@ Target: `demo/src/cache.ts` — 5 planted defects, ground truth in `PLANTED_BUGS
 
 ## Second opinion (nvidia/nemotron-3-ultra-550b-a55b:free)
 
-**6 findings.** The cache has a critical async bug that breaks its core contract, plus major defects in batching, size tracking, concurrency, and error handling that would surface under load or failure conditions.
+**5 findings.** The cache has critical async and batching bugs that break core functionality, a major state-tracking bug that defeats eviction, and a concurrency gap causing duplicate upstream calls.
 
-### 1. [CRITICAL] getMany returns before upstream fetches complete because forEach does not await async callbacks.
+### 1. [CRITICAL] getMany returns immediately without awaiting batched upstream fetches because forEach does not await async callbacks.
 
 - **Where:** src/cache.ts:85-92
 - **Category:** async-not-awaited
-- **How it breaks:** Call getMany(['a', 'b']) with both keys missing. The function returns an empty Map immediately. The two upstream requests fire in background and eventually write to cache, but the caller never sees those values.
+- **How it breaks:** Call getMany(['missing-id']) with empty cache. The function returns an empty Map instantly. The upstream fetch runs in the background but its results are never added to the returned Map. Caller sees no data for IDs that were successfully fetched.
 - **Possible fix:** Replace forEach with a for...of loop and await each fetchChunk, or use Promise.all with map.
 
-### 2. [MAJOR] chunk produces batches of size batchSize-1 due to incorrect slice end index.
+### 2. [CRITICAL] chunk slices with start + batchSize - 1, producing chunks one element smaller than batchSize.
 
-- **Where:** src/cache.ts:73-77
+- **Where:** src/cache.ts:73-78
 - **Category:** off-by-one-batching
-- **How it breaks:** With batchSize=50 and 50 missing IDs, chunk returns two batches: one of 49 and one of 1, causing two upstream requests instead of one.
-- **Possible fix:** Change slice end to start + this.batchSize (remove the -1).
+- **How it breaks:** batchSize=3, missing IDs ['a','b','c','d','e','f']. Expected chunks: [['a','b','c'], ['d','e','f']]. Actual chunks: [['a','b'], ['c','d'], ['e','f']]. Upstream receives 3 requests of 2 items instead of 2 requests of 3, increasing latency and request count.
+- **Possible fix:** Change slice end to start + this.batchSize (remove -1).
 
-### 3. [MAJOR] size field is incremented on write but never decremented on deletion, causing eviction and stats to diverge from reality.
+### 3. [MAJOR] size counter is incremented on write but never decremented on eviction, invalidation, or expiry, causing eviction logic to trigger incorrectly and stats to diverge from reality.
 
-- **Where:** src/cache.ts:38-52
-- **Category:** size-tracking-corruption
-- **How it breaks:** Insert 1000 entries (size=1000). Let all expire. Read all 1000 — each read deletes the entry but size stays 1000. Insert one new entry: size becomes 1001, eviction triggers and deletes one entry, but size becomes 1002. stats returns {size: 1002, tracked: 1}.
-- **Possible fix:** Decrement size in read (on expiry), invalidate, and the eviction block. Or remove size entirely and use entries.size.
+- **Where:** src/cache.ts:55-68
+- **Category:** stale-size-counter
+- **How it breaks:** maxEntries=2. Write 'a', 'b', 'c'. Eviction deletes 'a' but size becomes 3. Stats show size=3, tracked=2. Next write evicts 'b' (oldest) but size grows to 4. Cache grows unbounded despite maxEntries limit.
+- **Possible fix:** Decrement size in write when evicting, in invalidate, and in read when deleting expired entry. Or remove size and use entries.size directly.
 
-### 4. [MAJOR] Concurrent getMany calls for the same missing keys each fire independent upstream requests.
+### 4. [MAJOR] Concurrent getMany calls for the same missing IDs each trigger independent upstream fetches, wasting bandwidth and potentially overwhelming upstream.
 
-- **Where:** src/cache.ts:79-92
-- **Category:** missing-inflight-deduplication
-- **How it breaks:** Two callers simultaneously invoke getMany(['x']) where 'x' is not cached. Both see 'x' as missing, both call upstream for ['x']. Upstream receives two requests for the same ID.
-- **Possible fix:** Track in-flight promises per key (or per chunk) and await existing promise if a request for the same IDs is already pending.
+- **Where:** src/cache.ts:79-94
+- **Category:** missing-request-deduplication
+- **How it breaks:** Two parallel calls to getMany(['x']) with cold cache. Both see 'x' as missing, both call upstream for ['x']. Upstream receives duplicate request. If upstream has side effects (e.g., rate limiting, mutations), this causes incorrect behavior.
+- **Possible fix:** Track in-flight requests per ID (e.g., Map<string, Promise<T>>) and await existing promise instead of re-fetching.
 
-### 5. [MAJOR] fetchChunk catches all errors and returns empty object, making upstream failures indistinguishable from empty results.
+### 5. [MINOR] fetchChunk catches all errors and returns empty object, giving callers no signal that upstream failed.
 
-- **Where:** src/cache.ts:95-101
-- **Category:** swallowed-upstream-errors
-- **How it breaks:** Upstream throws a 500 error. fetchChunk returns {}. getMany returns a result Map missing the requested keys, with no error surfaced. Caller cannot tell if keys don't exist or if upstream failed.
-- **Possible fix:** Either propagate the error, or return a result structure that distinguishes 'not found' from 'error'.
-
-### 6. [MINOR] Eviction removes only one entry when size exceeds maxEntries, potentially leaving cache over capacity.
-
-- **Where:** src/cache.ts:43-49
-- **Category:** inefficient-eviction
-- **How it breaks:** If size somehow reaches maxEntries + 100 (e.g., due to size tracking bug), a single write triggers eviction of only one entry, leaving cache at maxEntries + 99.
-- **Possible fix:** Loop eviction until size < maxEntries, or compute how many to remove and delete in bulk.
+- **Where:** src/cache.ts:96-102
+- **Category:** silent-error-swallow
+- **How it breaks:** Upstream returns 500 for a chunk. fetchChunk returns {}. getMany succeeds but returns no data for those IDs. Caller cannot distinguish 'ID not found' from 'upstream error', making debugging and retry logic impossible.
+- **Possible fix:** Propagate error or return a result object with error metadata. At minimum, log the error.
 
 ---
 _These are claims from a second model, not verified facts. Confirm each against the real code before acting on it._
