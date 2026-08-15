@@ -38,11 +38,29 @@ export class OpenRouterError extends Error {
 
 let lastRequestAt = 0;
 
-async function throttle(): Promise<void> {
-  const elapsed = Date.now() - lastRequestAt;
-  const wait = MIN_REQUEST_INTERVAL_MS - elapsed;
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastRequestAt = Date.now();
+/**
+ * Serialises waiters through a promise chain.
+ *
+ * Reading and updating `lastRequestAt` inline is not enough: MCP clients may
+ * invoke tools in parallel, and concurrent callers would each observe the same
+ * `lastRequestAt`, sleep the same interval, and then fire together — a burst
+ * rather than a throttle. Chaining makes each caller wait for the previous one
+ * to claim its slot before computing its own.
+ */
+let queue: Promise<void> = Promise.resolve();
+
+function throttle(): Promise<void> {
+  const slot = queue.then(async () => {
+    const wait = MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastRequestAt = Date.now();
+  });
+
+  // Swallow rejections on the chain itself so one failure cannot wedge the
+  // queue for every subsequent caller; `slot` still surfaces them to its owner.
+  queue = slot.catch(() => undefined);
+
+  return slot;
 }
 
 function defaultModel(): string {

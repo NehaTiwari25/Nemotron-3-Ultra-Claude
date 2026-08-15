@@ -2,8 +2,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { loadDotEnv } from "./env.js";
 import { reviewDiff } from "./review.js";
 import { activeModel } from "./openrouter.js";
+
+// Must run before anything reads process.env.
+loadDotEnv();
 
 const server = new McpServer({
   name: "second-opinion",
