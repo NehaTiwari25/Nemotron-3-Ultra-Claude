@@ -1,0 +1,112 @@
+# Second Opinion
+
+**Your AI reviews its own code. That's the bug.**
+
+An MCP server that routes code review to a *different* model than the one that wrote the code.
+
+---
+
+## The problem
+
+When a coding agent reviews its own output, it is confident about precisely the things it got wrong. The same weights that produced the hallucinated method signature will read that signature back and see nothing unusual. Self-review has a blind spot exactly the shape of the model's own priors.
+
+A second model with different training has different blind spots. The overlap is where real bugs hide — and the disagreement between them is signal you can act on.
+
+Second Opinion gives your agent a `review_diff` tool. It sends the change to another model, gets back behavioral defects with concrete failure scenarios, and hands them to your agent to verify.
+
+## Install
+
+```bash
+npm install -g second-opinion-mcp
+```
+
+Then add it to your MCP client. For **Claude Code**, in `.mcp.json` at your project root (or `~/.claude.json` for all projects):
+
+```json
+{
+  "mcpServers": {
+    "second-opinion": {
+      "command": "npx",
+      "args": ["-y", "second-opinion-mcp"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-v1-..."
+      }
+    }
+  }
+}
+```
+
+Get a key at [openrouter.ai/keys](https://openrouter.ai/keys).
+
+## Cost
+
+The default reviewer is **NVIDIA Nemotron 3 Ultra** (550B params, ~55B active) on OpenRouter's free tier. Reviews cost nothing.
+
+The free tier is capped by request count, not tokens:
+
+| Account | Requests/day |
+|---|---|
+| Under $10 lifetime credit | 50 |
+| $10+ credit added once | 1,000 |
+
+Both are capped at 20 requests/minute; the server throttles itself to stay under it.
+
+To use a different reviewer, set `SECOND_OPINION_MODEL` to any [OpenRouter model ID](https://openrouter.ai/models):
+
+```json
+"env": {
+  "OPENROUTER_API_KEY": "sk-or-v1-...",
+  "SECOND_OPINION_MODEL": "deepseek/deepseek-r1"
+}
+```
+
+## Usage
+
+Once configured, just ask:
+
+> Review that change with a second opinion.
+
+Or let your agent call it on its own — the tool description tells it to reach for this after non-trivial edits.
+
+Passing `context` (type definitions, called functions, schemas the diff depends on but doesn't contain) meaningfully cuts false positives. The reviewer can't reason about code it can't see.
+
+## What it looks for
+
+The prompt targets the failure modes characteristic of *generated* code:
+
+- APIs, methods, or parameters that don't exist, or exist with a different signature
+- Boundary and off-by-one errors
+- Errors caught and silently swallowed
+- Races, unawaited promises, state mutated out of order
+- Null/undefined paths the happy path never exercises
+- Changes that are individually correct but cancel out or leave state inconsistent
+- Injection, path traversal, unvalidated input, leaked secrets
+
+Every finding must carry a concrete failure scenario — specific inputs, specific wrong result. Findings that can't be grounded that way get dropped before they reach you. This is what keeps the output from degrading into style opinions.
+
+Style, naming, and formatting are explicitly out of scope. You have a linter.
+
+## Honest limitations
+
+- **Findings are claims, not facts.** A second model hallucinates too. Everything it reports needs verifying against the real code. The tool output says so, and your agent should treat it that way.
+- **No finding ≠ correct.** It means this reviewer found nothing. That's weaker than it sounds.
+- **Two models share some blind spots.** Different training helps; it isn't independence. Overlapping failure modes stay invisible.
+- **Your code leaves your machine.** OpenRouter's free NVIDIA endpoint carries a notice that session data is collected for product improvement. Don't send proprietary or client code through the free tier — use a paid endpoint with a retention policy you've read, or don't send it at all.
+
+## Roadmap
+
+- `best_of_n` — generate N candidates, select by running tests rather than by asking a model which looks better
+- `bulk_generate` — delegate mechanical work (test stubs, docstrings, format conversion) to the cheap model
+- Local reviewer via a fine-tuned Nemotron Nano, no API round trip
+
+## Development
+
+```bash
+npm install
+npm run build
+node scripts/smoke.mjs   # protocol-level tests, no API calls
+```
+
+## License
+
+MIT
