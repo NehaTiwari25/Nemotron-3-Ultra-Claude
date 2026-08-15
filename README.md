@@ -153,6 +153,12 @@ Run the scored demo (uses one API request):
 node demo/run-demo.mjs
 ```
 
+## Using this?
+
+Open an [issue](https://github.com/NehaTiwari25/Nemotron-3-Ultra-Claude/issues) or a discussion and say hi — I'd like to know what it's catching for you, and what it's missing.
+
+Findings it got wrong are especially useful. The prompt is the product here, and false positives are the thing most likely to make people stop reading its output.
+
 ## License
 
 MIT
