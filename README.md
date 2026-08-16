@@ -60,6 +60,25 @@ To use a different reviewer, set `SECOND_OPINION_MODEL` to any [OpenRouter model
 }
 ```
 
+## Running fully offline
+
+Any OpenAI-compatible endpoint works, so a local model needs no code change — only a URL. With [Ollama](https://ollama.com):
+
+```bash
+ollama pull nemotron-3-nano:4b
+```
+
+```json
+"env": {
+  "SECOND_OPINION_BASE_URL": "http://localhost:11434/v1",
+  "SECOND_OPINION_MODEL": "nemotron-3-nano:4b"
+}
+```
+
+No API key is needed for a local endpoint, and the rate-limit throttle is skipped. Nothing leaves your machine — which makes this the option to use for client work or any code you cannot send to a third party.
+
+**Be realistic about the tradeoff.** On the bundled 5-bug demo, `nemotron-3-ultra` found 5 of 5; `nemotron-3-nano:4b` found 1 of 5 (though its explanation of that one was more accurate than the larger model's). Local is the right answer for privacy and for unlimited runs, not for review quality.
+
 ## Usage
 
 Once configured, just ask:

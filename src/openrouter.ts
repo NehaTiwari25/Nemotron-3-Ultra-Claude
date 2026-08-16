@@ -7,10 +7,34 @@
  * generic HTTP error.
  */
 
-const API_URL = "https://openrouter.ai/api/v1/chat/completions";
+/**
+ * Any OpenAI-compatible chat-completions endpoint works. OpenRouter is the
+ * default; Ollama (http://localhost:11434/v1), LM Studio and llama.cpp's
+ * server all speak the same shape, so pointing at a local model is a matter of
+ * changing a URL rather than changing the client.
+ */
+const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
 /** Free variants are capped at 20 req/min, so stay just under that. */
 const MIN_REQUEST_INTERVAL_MS = 3_100;
+
+function baseUrl(): string {
+  const configured = process.env.SECOND_OPINION_BASE_URL ?? DEFAULT_BASE_URL;
+  return configured.replace(/\/+$/, "");
+}
+
+/**
+ * A model on this machine has no rate limit and no credentials, so both the
+ * throttle and the key requirement are skipped for local endpoints.
+ */
+function isLocal(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -64,18 +88,22 @@ function throttle(): Promise<void> {
 }
 
 function defaultModel(): string {
-  return (
-    process.env.SECOND_OPINION_MODEL ??
-    "nvidia/nemotron-3-ultra-550b-a55b:free"
-  );
+  if (process.env.SECOND_OPINION_MODEL) return process.env.SECOND_OPINION_MODEL;
+  // A local server hosts whatever was pulled, so there is no sensible remote
+  // default to fall back to.
+  return isLocal(baseUrl())
+    ? "nemotron-3-nano:4b"
+    : "nvidia/nemotron-3-ultra-550b-a55b:free";
 }
 
-function apiKey(): string {
+function apiKey(): string | undefined {
   const key = process.env.OPENROUTER_API_KEY;
-  if (!key) {
+  if (!key && !isLocal(baseUrl())) {
     throw new OpenRouterError(
       "OPENROUTER_API_KEY is not set. Get a key at https://openrouter.ai/keys " +
-        "and add it to your MCP server config's `env` block.",
+        "and add it to your MCP server config's `env` block — or point " +
+        "SECOND_OPINION_BASE_URL at a local server such as " +
+        "http://localhost:11434/v1, which needs no key.",
     );
   }
   return key;
@@ -114,6 +142,15 @@ function describeFailure(status: number, body: string): OpenRouterError {
     );
   }
 
+  if (status === 404) {
+    return new OpenRouterError(
+      `The endpoint returned 404. If this is a local server, the model is ` +
+        "probably not pulled yet — run `ollama pull <model>` and check " +
+        "`ollama list`. If it is remote, check the model ID.",
+      status,
+    );
+  }
+
   if (status >= 500) {
     return new OpenRouterError(
       `OpenRouter upstream error (${status}). Retrying.`,
@@ -131,20 +168,22 @@ function describeFailure(status: number, body: string): OpenRouterError {
 export async function complete(options: CompletionOptions): Promise<string> {
   const model = options.model ?? defaultModel();
   const key = apiKey();
+  const endpoint = `${baseUrl()}/chat/completions`;
+  const local = isLocal(endpoint);
 
   const maxAttempts = 4;
   let lastError: OpenRouterError | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    await throttle();
+    if (!local) await throttle();
 
     let response: Response;
     try {
-      response = await fetch(API_URL, {
+      response = await fetch(endpoint, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${key}`,
           "Content-Type": "application/json",
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
           // Optional attribution headers OpenRouter uses for its leaderboards.
           "HTTP-Referer": "https://github.com/second-opinion-mcp",
           "X-Title": "Second Opinion MCP",
@@ -158,7 +197,8 @@ export async function complete(options: CompletionOptions): Promise<string> {
       });
     } catch (cause) {
       lastError = new OpenRouterError(
-        `Network error contacting OpenRouter: ${(cause as Error).message}`,
+        `Network error contacting ${endpoint}: ${(cause as Error).message}` +
+          (local ? " — is the local server running? Try `ollama serve`." : ""),
         undefined,
         true,
       );
