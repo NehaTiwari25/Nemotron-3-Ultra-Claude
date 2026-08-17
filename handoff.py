@@ -174,6 +174,14 @@ def local_brief(rows: list[dict]) -> str:
     """The facts a machine can extract without help. Free, instant, always right."""
     instructions = [" ".join(texts_of(r)).strip() for r in rows if is_real_user_turn(r)]
 
+    # Extract git branch from the first row that has it
+    git_branch = None
+    for row in rows:
+        branch = row.get("gitBranch")
+        if branch:
+            git_branch = branch
+            break
+
     edited: list[str] = []
     commands: list[str] = []
     for row in rows:
@@ -199,6 +207,9 @@ def local_brief(rows: list[dict]) -> str:
                 break
 
     parts = ["## Session facts", ""]
+    if git_branch:
+        parts.append(f"**Branch:** {git_branch}")
+        parts.append("")
     if instructions:
         parts.append(f"**Opening request:** {instructions[0][:400]}")
         if len(instructions) > 1:

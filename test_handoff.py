@@ -130,6 +130,31 @@ def test_local_brief() -> None:
     check("last message captured", "done for now" in brief)
 
 
+def test_git_branch_in_brief() -> None:
+    """Whoever picks the work up needs to know which branch it was on.
+
+    The transcript records `gitBranch` on its rows; the brief currently drops it,
+    so a handover can send someone to the right files on the wrong branch.
+    """
+    print("\ngit branch reaches the brief")
+    rows = [
+        dict(user("start the feature"), gitBranch="feature/parser"),
+        dict(assistant("working"), gitBranch="feature/parser"),
+    ]
+    brief = handoff.local_brief(rows)
+    check("branch name appears", "feature/parser" in brief,
+          "brief did not mention the branch")
+    check("branch is labelled", "Branch:" in brief, "no 'Branch:' label in brief")
+
+    # The fixture text must not itself contain the word, and the assertion must
+    # test for the LABEL rather than a substring. The first version of this used
+    # `user("no branch here")` and asserted `"ranch" not in plain` - which the
+    # echoed opening request satisfies on its own, failing a correct patch.
+    plain = handoff.local_brief([user("nothing to see"), assistant("ok")])
+    check("no branch label when transcript has none", "Branch:" not in plain,
+          "brief invented a branch section")
+
+
 def test_malformed_transcripts() -> None:
     print("\nmalformed and missing transcripts")
     check("missing file returns nothing", handoff.read_transcript(r"C:\nope\missing.jsonl") == [])
@@ -254,6 +279,7 @@ def main() -> int:
         test_denied_project_never_calls_network()
         test_user_turn_filter()
         test_local_brief()
+        test_git_branch_in_brief()
         test_malformed_transcripts()
         test_digest_keeps_opening_request()
         test_echo_guard()
