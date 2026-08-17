@@ -226,6 +226,74 @@ def test_inject_freshness() -> None:
 
 # --- the hook contract -----------------------------------------------------
 
+def test_handback_of_delegated_work() -> None:
+    print("\nhanding work back when context returns")
+    with tempfile.TemporaryDirectory() as store:
+        handoff.STORE = Path(store)
+        handoff.CONFIG_PATH = Path(store) / "missing.json"
+        cwd = r"C:\p\handback"
+
+        handoff.record_work(cwd, {"task": "add a branch section", "file": "handoff.py",
+                                  "edits": 2, "passed": True, "model": "nemotron"})
+        handoff.record_work(cwd, {"task": "a rejected attempt", "file": "other.py",
+                                  "edits": 1, "passed": False, "model": "nemotron"})
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            handoff.inject({"cwd": cwd})
+        text = out.getvalue()
+        check("reports the task", "add a branch section" in text)
+        check("reports which file changed", "handoff.py" in text)
+        check("says the applied one passed", "left applied" in text)
+        check("reports the rejected attempt too", "a rejected attempt" in text)
+        check("says the failed one was reverted", "reverted" in text)
+        check("warns the change is unreviewed", "git diff" in text)
+
+        # Announced once. A repeated announcement is one that gets skipped.
+        out = io.StringIO()
+        with redirect_stdout(out):
+            handoff.inject({"cwd": cwd})
+        check("not repeated on the next session", out.getvalue() == "")
+
+        handoff.record_work(cwd, {"task": "something new", "file": "third.py",
+                                  "edits": 1, "passed": True, "model": "nemotron"})
+        out = io.StringIO()
+        with redirect_stdout(out):
+            handoff.inject({"cwd": cwd})
+        check("new work is announced", "something new" in out.getvalue())
+        check("old work is not re-announced", "add a branch section" not in out.getvalue())
+
+        check("corrupt work log does not crash", isinstance(handoff.read_work(cwd), list))
+        handoff.work_log_path(cwd).write_text("not json\n{\"task\":\"ok\"}\n", encoding="utf-8")
+        check("corrupt lines skipped, good ones kept", len(handoff.read_work(cwd)) == 1)
+
+
+def test_brief_delivered_once() -> None:
+    print("\nbrief is delivered once, not at every session start")
+    with tempfile.TemporaryDirectory() as store:
+        handoff.STORE = Path(store)
+        handoff.CONFIG_PATH = Path(store) / "missing.json"
+        cwd = r"C:\p\once"
+        handoff.brief_path(cwd).write_text("## Goal\nthe only copy\n", encoding="utf-8")
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            handoff.inject({"cwd": cwd})
+        check("delivered the first time", "the only copy" in out.getvalue())
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            handoff.inject({"cwd": cwd})
+        check("silent the second time", out.getvalue() == "")
+
+        # A fresh compaction writes a new brief, which must be delivered again.
+        handoff.brief_path(cwd).write_text("## Goal\na newer brief\n", encoding="utf-8")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            handoff.inject({"cwd": cwd})
+        check("a newly written brief is delivered", "a newer brief" in out.getvalue())
+
+
 def test_exit_codes() -> None:
     print("\nexit code is 0 no matter what (2 would block compaction)")
     script = str(Path(__file__).with_name("handoff.py"))
@@ -284,6 +352,8 @@ def main() -> int:
         test_digest_keeps_opening_request()
         test_echo_guard()
         test_inject_freshness()
+        test_brief_delivered_once()
+        test_handback_of_delegated_work()
         test_exit_codes()
         test_unicode_survives_the_pipe()
     finally:

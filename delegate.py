@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from handoff import HOME, STORE, api_key, load_config, slug
+from handoff import STORE, api_key, load_config, record_work, slug
 
 SYSTEM = """You are a senior engineer picking up someone else's work in progress.
 
@@ -216,13 +216,25 @@ def main() -> int:
         print(f"  still failing ({len(remaining)}): " + "; ".join(sorted(remaining)))
     print(f"  artifacts: {artifacts}")
 
+    if not passed:
+        target.write_text(backup, encoding="utf-8")
+
+    # Hand it back. The next session picks this up through the SessionStart hook,
+    # so work done while Claude had no context is announced rather than
+    # discovered later in a diff nobody expected.
+    record_work(str(project), {
+        "task": args.task, "file": args.file, "edits": len(edits),
+        "passed": passed, "model": load_config()["model"], "test": args.test,
+    })
+
     if passed:
         print("\nPASS - Nemotron's patch makes the suite green. Left in place;\n"
-              "review it with `git diff` before keeping it.")
+              "review it with `git diff` before keeping it.\n"
+              "Recorded for handback to the next session.")
         return 0
 
-    target.write_text(backup, encoding="utf-8")
-    print("\nFAIL - patch applied but the suite still fails. File restored.")
+    print("\nFAIL - patch applied but the suite still fails. File restored.\n"
+          "Recorded for handback anyway - a rejected attempt is worth knowing about.")
     return 1
 
 

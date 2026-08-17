@@ -354,6 +354,63 @@ def brief_path(cwd: str) -> Path:
     return STORE / f"{slug(cwd)}.md"
 
 
+def work_log_path(cwd: str) -> Path:
+    """Where delegated work is recorded, for reporting back on the way in."""
+    return STORE / f"{slug(cwd)}.work.jsonl"
+
+
+def record_work(cwd: str, entry: dict) -> None:
+    """Append one delegated task. Called by delegate.py, read by inject."""
+    STORE.mkdir(parents=True, exist_ok=True)
+    entry = dict(entry, at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 delivered=False)
+    with work_log_path(cwd).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def read_work(cwd: str) -> list[dict]:
+    path = work_log_path(cwd)
+    entries = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    return entries
+
+
+def mark_delivered(cwd: str, entries: list[dict]) -> None:
+    """Rewrite the log with everything marked delivered.
+
+    Delivered once, deliberately. Re-announcing the same patch at every session
+    start would train the reader to skip the announcement, which defeats it.
+    """
+    path = work_log_path(cwd)
+    try:
+        path.write_text("\n".join(
+            json.dumps(dict(e, delivered=True), ensure_ascii=False) for e in entries
+        ) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def describe_work(pending: list[dict]) -> str:
+    lines = ["## Work done while you were away", ""]
+    for entry in pending:
+        outcome = {True: "tests pass, left applied",
+                   False: "tests failed, reverted"}.get(entry.get("passed"), "outcome unknown")
+        lines.append(f"- **{entry.get('file', '?')}** — {entry.get('task', '?')}")
+        lines.append(f"  {entry.get('edits', '?')} edit(s) by {entry.get('model', 'Nemotron')}; "
+                     f"{outcome} ({entry.get('at', '?')})")
+    lines += ["", "Nothing here has been reviewed by you or by me. `git diff` before "
+              "building on it — a passing test suite is a gate, not a review."]
+    return "\n".join(lines)
+
+
 def capture(event: dict) -> None:
     config = load_config()
     cwd = event.get("cwd") or ""
@@ -391,21 +448,44 @@ def capture(event: dict) -> None:
 
 
 def inject(event: dict) -> None:
-    """Print the brief so Claude receives it as context. Silence if stale."""
+    """Hand the work back: the brief, plus anything Nemotron did in the meantime.
+
+    Both halves are delivered ONCE. A brief that reappears at every session start
+    is noise, and an announcement that repeats is an announcement that gets
+    skipped - which matters most for the part reporting unreviewed file changes.
+    """
     config = load_config()
-    path = brief_path(event.get("cwd") or "")
+    cwd = event.get("cwd") or ""
+    spoken = False
+
+    path = brief_path(cwd)
+    marker = path.with_suffix(".delivered")
     try:
-        text = path.read_text(encoding="utf-8")
+        stamp = str(path.stat().st_mtime)
         age_minutes = (time.time() - path.stat().st_mtime) / 60
+        already = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+        if age_minutes <= config["brief_max_age_minutes"] and already != stamp:
+            print("The previous context was compacted. This brief describes the "
+                  "work in progress at that point:\n")
+            print(path.read_text(encoding="utf-8"))
+            spoken = True
+            try:
+                marker.write_text(stamp, encoding="utf-8")
+            except OSError:
+                pass
     except OSError:
-        return
+        pass
 
-    if age_minutes > config["brief_max_age_minutes"]:
-        return
-
-    print("The previous context was compacted. This brief describes the work in "
-          "progress at that point:\n")
-    print(text)
+    # Delegated work is reported whether or not there is a brief: it describes
+    # files on disk that changed without anyone reviewing them, which is the more
+    # urgent of the two things to say.
+    entries = read_work(cwd)
+    pending = [e for e in entries if not e.get("delivered")]
+    if pending:
+        if spoken:
+            print()
+        print(describe_work(pending))
+        mark_delivered(cwd, entries)
 
 
 def main() -> int:

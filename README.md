@@ -7,11 +7,20 @@ Companion to [Second Opinion](https://github.com/NehaTiwari25/Nemotron-3-Ultra-C
 ## How it hooks in
 
 ```
-PreCompact   (matcher: auto)     -> handoff.py capture   writes the brief
-SessionStart (matcher: compact)  -> handoff.py inject    prints it; Claude reads stdout as context
+PreCompact   (auto, manual)            -> handoff.py capture   hand off: write the brief
+SessionStart (compact, startup, resume) -> handoff.py inject    hand back: brief + work done
 ```
 
 `SessionStart` stdout is added to Claude's context, which is what closes the loop. There is **no "context nearly full" hook** — compaction is the only lifecycle point, so the brief is written *at* the boundary, not before it.
+
+The hand-back carries two things:
+
+1. **The brief**, so the model on the other side resumes where the work was rather than where a generic summary left it.
+2. **Anything `delegate.py` did in the meantime** — which file changed, how many edits, whether the tests passed, and whether it was left applied or reverted. Files can change while Claude has no context; discovering that later in an unexpected diff is worse than being told.
+
+Both are delivered **once**. A brief that reappears at every session start is noise, and an announcement that repeats is an announcement that gets skipped — which matters most for the part reporting unreviewed changes. A *new* brief or a *new* delegated task is announced normally; the old one is not repeated.
+
+`startup` and `resume` are registered alongside `compact` so work done between sessions is reported when you come back, not just after a compaction.
 
 ## Projects are opt in
 
