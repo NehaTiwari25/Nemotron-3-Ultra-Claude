@@ -2,7 +2,7 @@
 
 When Claude Code fills its context it compacts, and what survives is a generic summary. This replaces that with a purpose-built continuation brief written by **Nemotron 3 Ultra** reading the full session transcript — what the session was trying to do, what it established, what to do next, and which details cost time.
 
-Companion to [Second Opinion](https://github.com/NehaTiwari25/Nemotron-3-Ultra-Claude), and it reuses that server's OpenRouter key.
+Part of [Second Opinion](../README.md); it reuses that server's OpenRouter key and needs no configuration of its own beyond the allowlist below.
 
 ## How it hooks in
 
@@ -71,8 +71,8 @@ If nothing appears, open `/hooks` once — the settings watcher only picks up di
 ## Install
 
 ```bash
-git clone https://github.com/NehaTiwari25/claude-context-handoff
-cd claude-context-handoff
+git clone https://github.com/NehaTiwari25/Nemotron-3-Ultra-Claude
+cd Nemotron-3-Ultra-Claude/handoff
 python test_handoff.py
 ```
 
@@ -97,3 +97,5 @@ Then add to `~/.claude/settings.json` (exec form, so Windows backslashes never r
 `auto` and `manual` are separate entries on purpose — whether the matcher is a regex or an exact string is undocumented, and `"auto|manual"` would silently match neither if it is exact.
 
 Requires Python 3.10+ and nothing else. No dependencies.
+
+MIT, under the [repository licence](../LICENSE).

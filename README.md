@@ -145,6 +145,18 @@ Style, naming, and formatting are explicitly out of scope. You have a linter.
 - **Two models share some blind spots.** Different training helps; it isn't independence. Overlapping failure modes stay invisible.
 - **Your code leaves your machine.** OpenRouter's free NVIDIA endpoint carries a notice that session data is collected for product improvement. Don't send proprietary or client code through the free tier — use a paid endpoint with a retention policy you've read, or don't send it at all.
 
+## Context handoff — [`handoff/`](handoff/)
+
+The same second model, pointed at a different problem: when Claude Code fills its context it compacts, and what survives is a generic summary. The reasoning goes — what was tried, what failed and why, which detail turned out to matter.
+
+Two hooks close that loop. `PreCompact` sends the session transcript to Nemotron for a structured continuation brief; `SessionStart` prints it back, where Claude reads stdout as context. One request per compaction.
+
+Projects are **opt in**, because a transcript contains everything the session touched. Unlisted projects never reach the network and get a locally-assembled brief instead — which is also what happens when the quota is spent or the API is slow.
+
+`handoff/delegate.py` takes it one step further: Nemotron gets the brief, a failing test, and one file, and returns a patch that is applied and gated on the test suite. Not an agent — no loop, no shell. The git-branch section in `handoff.py` was written that way.
+
+See [`handoff/README.md`](handoff/README.md). Python 3.10+, no dependencies.
+
 ## Roadmap
 
 - `best_of_n` — generate N candidates, select by running tests rather than by asking a model which looks better
