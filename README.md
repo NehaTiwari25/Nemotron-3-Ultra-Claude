@@ -27,7 +27,7 @@ Both are delivered **once**. A brief that reappears at every session start is no
 `~/.claude/handoff/config.json`:
 
 ```json
-{ "allowed_projects": ["C:\\Users\\trida\\second-opinion-finetune"] }
+{ "allowed_projects": ["C:\\path\\to\\a\\project", "/home/you/another"] }
 ```
 
 A transcript contains everything the session touched — source, file contents, command output. Sending that to a third-party endpoint is a per-project decision, made once, deliberately. **Unlisted projects never reach the network**; they still get a local brief.
@@ -50,7 +50,7 @@ Each compaction costs **one** request.
 ## Testing
 
 ```bash
-python test_handoff.py                       # 50 tests, no network, no API key
+python test_handoff.py                       # 67 tests, no network, no API key
 python handoff.py test <transcript.jsonl>    # print a brief from a real transcript
 ```
 
@@ -71,7 +71,8 @@ If nothing appears, open `/hooks` once — the settings watcher only picks up di
 ## Install
 
 ```bash
-git clone <this repo> C:\Users\trida\claude-handoff
+git clone https://github.com/NehaTiwari25/claude-context-handoff
+cd claude-context-handoff
 python test_handoff.py
 ```
 
@@ -85,7 +86,9 @@ Then add to `~/.claude/settings.json` (exec form, so Windows backslashes never r
       { "matcher": "manual", "hooks": [{ "type": "command", "command": "python", "args": ["<path>/handoff.py", "capture"], "timeout": 90 }] }
     ],
     "SessionStart": [
-      { "matcher": "compact", "hooks": [{ "type": "command", "command": "python", "args": ["<path>/handoff.py", "inject"], "timeout": 15 }] }
+      { "matcher": "compact", "hooks": [{ "type": "command", "command": "python", "args": ["<path>/handoff.py", "inject"], "timeout": 15 }] },
+      { "matcher": "startup", "hooks": [{ "type": "command", "command": "python", "args": ["<path>/handoff.py", "inject"], "timeout": 15 }] },
+      { "matcher": "resume",  "hooks": [{ "type": "command", "command": "python", "args": ["<path>/handoff.py", "inject"], "timeout": 15 }] }
     ]
   }
 }
