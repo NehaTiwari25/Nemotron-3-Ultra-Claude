@@ -44,7 +44,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from handoff import STORE, api_key, load_config, record_work, slug
+from handoff import STORE, api_key, load_config, project_allowed, record_work, slug
 
 SYSTEM = """You are a senior engineer picking up someone else's work in progress.
 
@@ -141,12 +141,22 @@ def apply_edits(path: Path, edits: list[dict]) -> tuple[bool, list[str]]:
 def failures(output: str) -> set[str]:
     """Names of failing checks, for telling a near miss from a patch that did nothing.
 
-    Reads the `FAILED: <name>` lines this project's suite prints. A runner that
-    reports differently just yields an empty set, which costs the feedback some
-    precision and breaks nothing.
+    Handles the two shapes in front of us - `FAILED: name` from the Python suite
+    and `FAIL  name` from the Node one - because the retry feedback is much more
+    useful when it can say which checks moved. A runner that reports differently
+    yields an empty set, which costs precision and breaks nothing.
     """
-    return {line.split("FAILED:", 1)[1].strip()
-            for line in output.splitlines() if "FAILED:" in line}
+    names = set()
+    for line in output.splitlines():
+        stripped = line.strip()
+        if "FAILED:" in stripped:
+            names.add(stripped.split("FAILED:", 1)[1].strip())
+        elif stripped.startswith("FAIL"):
+            rest = stripped[4:].lstrip(":").strip()
+            if rest:
+                # Trim the runner's own " — detail" suffix; the name is the key.
+                names.add(rest.split(" — ")[0].split("  ")[0].strip())
+    return names
 
 
 def run(command: str, cwd: Path) -> tuple[bool, str]:
@@ -178,6 +188,8 @@ def main() -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--file", required=True, help="the one file Nemotron may change")
     parser.add_argument("--test", required=True, help="command that gates the patch")
+    parser.add_argument("--allow-unlisted", action="store_true",
+                        help="send code from a project that is not allowlisted")
     parser.add_argument("--attempts", type=int, default=3,
                         help="how many tries before giving up; each costs one request")
     parser.add_argument("--project", default=str(Path.cwd()))
@@ -188,6 +200,18 @@ def main() -> int:
     target = (project / args.file).resolve()
     if not target.exists():
         print(f"{target} not found")
+        return 1
+
+    # The same gate the hook uses. This path sends whole source files to a
+    # third-party endpoint, so it needs the check MORE than the hook does, not
+    # less - and it is invoked by hand, against whatever project you happen to be
+    # standing in, which is exactly when the wrong one gets picked.
+    if not (project_allowed(str(project), load_config()) or args.allow_unlisted):
+        print(f"{project} is not on the handoff allowlist, so its code will not be\n"
+              f"sent anywhere. Add it to ~/.claude/handoff/config.json if it is\n"
+              f"yours to share, or pass --allow-unlisted to override deliberately.\n\n"
+              f"Client and bounty-scope code should not go through the free tier at\n"
+              f"all: the endpoint collects session data.")
         return 1
 
     brief_file = Path(args.brief) if args.brief else STORE / f"{slug(str(project))}.md"

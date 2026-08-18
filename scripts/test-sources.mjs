@@ -64,6 +64,32 @@ try {
   );
   check("describes the file count", multi.description.startsWith("2 files"));
   check("reports byte size", multi.bytes > 0);
+  // The description is echoed in the report header, so it should read back the
+  // caller's own spellings rather than resolved absolute paths.
+  check(
+    "describes files as the caller named them",
+    multi.description === "2 files: a.ts, b.ts",
+    `description was: ${multi.description}`,
+  );
+
+  // The same file listed twice is read twice, and the reviewer pays for the
+  // duplicate in context it already has. Relative and absolute spellings of one
+  // path are the same file and should collapse too.
+  const repeated = await resolveSource({ paths: ["a.ts", "a.ts"], cwd: scratch });
+  check(
+    "duplicate paths are read once",
+    repeated.content.split("File: a.ts").length - 1 === 1,
+    `file appeared ${repeated.content.split("File: a.ts").length - 1} times`,
+  );
+  const mixed = await resolveSource({
+    paths: ["a.ts", join(scratch, "a.ts")],
+    cwd: scratch,
+  });
+  check(
+    "relative and absolute spellings collapse",
+    mixed.content.split("export const a = 1;").length - 1 === 1,
+    `content appeared ${mixed.content.split("export const a = 1;").length - 1} times`,
+  );
 
   await expectError(
     "rejects a missing file",

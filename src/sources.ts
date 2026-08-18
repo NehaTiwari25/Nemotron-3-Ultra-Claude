@@ -171,9 +171,18 @@ async function fromGit(ref: string, cwd: string): Promise<ResolvedSource> {
 
 async function fromPaths(paths: string[], cwd: string): Promise<ResolvedSource> {
   const sections: string[] = [];
+  // Deduplicated on the RESOLVED path, so "a.ts" and "/abs/a.ts" collapse, but
+  // remembered by the caller's own spelling: the description is echoed in the
+  // report header, and absolute machine paths there help nobody.
+  const seen = new Set<string>();
+  const kept: string[] = [];
 
   for (const entry of paths) {
     const full = isAbsolute(entry) ? entry : resolve(cwd, entry);
+
+    if (seen.has(full)) continue;
+    seen.add(full);
+    kept.push(entry);
 
     // Guard before touching the filesystem: a path that should be refused must
     // be refused whether or not it happens to exist, and a rejected path should
@@ -201,12 +210,12 @@ async function fromPaths(paths: string[], cwd: string): Promise<ResolvedSource> 
   }
 
   const content = sections.join("\n\n");
-  assertSize(content, `${paths.length} file(s)`);
+  assertSize(content, `${kept.length} file(s)`);
 
   return {
     content,
     description:
-      paths.length === 1 ? paths[0] : `${paths.length} files: ${paths.join(", ")}`,
+      kept.length === 1 ? kept[0] : `${kept.length} files: ${kept.join(", ")}`,
     bytes: Buffer.byteLength(content, "utf8"),
   };
 }

@@ -51,9 +51,11 @@ def drive(work: Path, replies: list[dict], attempts: int = 3) -> tuple[int, list
     delegate.ask = fake_ask
     delegate.record_work = lambda *a, **k: None
     argv = sys.argv
+    # Temp projects are not on the allowlist, which is the correct answer for
+    # real use and would stop every test here. The guard gets its own test below.
     sys.argv = ["delegate.py", "--task", "make add work", "--file", "mod.py",
                 "--test", f'"{sys.executable}" t.py', "--project", str(work),
-                "--attempts", str(attempts)]
+                "--attempts", str(attempts), "--allow-unlisted"]
     try:
         with redirect_stdout(io.StringIO()):
             code = delegate.main()
@@ -154,6 +156,36 @@ def test_file_restored_when_every_attempt_fails() -> None:
     check("file restored exactly", (work / "mod.py").read_text(encoding="utf-8") == before)
 
 
+def test_unlisted_project_sends_nothing() -> None:
+    """The guard that matters most: this path ships whole source files.
+
+    It is run by hand, against whatever project you are standing in, which is
+    exactly the situation where the wrong one gets picked.
+    """
+    print("\nunlisted projects are refused before anything is sent")
+    work = project()
+    prompts = []
+    original_ask, original_record = delegate.ask, delegate.record_work
+    delegate.ask = lambda *a, **k: prompts.append(1)
+    delegate.record_work = lambda *a, **k: None
+    argv = sys.argv
+    sys.argv = ["delegate.py", "--task", "t", "--file", "mod.py",
+                "--test", f'"{sys.executable}" t.py', "--project", str(work)]
+    try:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = delegate.main()
+    finally:
+        delegate.ask, delegate.record_work = original_ask, original_record
+        sys.argv = argv
+
+    check("refuses to run", code == 1)
+    check("no request made", not prompts)
+    check("says why", "not on the handoff allowlist" in out.getvalue())
+    check("names the override", "--allow-unlisted" in out.getvalue())
+    check("warns about client code", "free tier" in out.getvalue())
+
+
 def test_passing_suite_is_not_delegated() -> None:
     print("\nnothing to do is not a task")
     work = project(source="def add(a, b):\n    return a + b\n")
@@ -171,6 +203,7 @@ def main() -> int:
     test_bad_anchor_gets_specific_feedback()
     test_identical_patch_stops_the_loop()
     test_file_restored_when_every_attempt_fails()
+    test_unlisted_project_sends_nothing()
     test_passing_suite_is_not_delegated()
     print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
     for name in FAILED:
