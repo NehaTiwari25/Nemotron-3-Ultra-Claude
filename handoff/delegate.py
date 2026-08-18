@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -64,14 +65,29 @@ Your entire response must be the JSON object: it begins with { and ends with }, 
 }"""
 
 
-def ask(system: str, user: str, *, max_tokens: int = 16000, timeout: int = 600) -> dict | None:
-    """One request, returning the parsed object or None."""
-    key = api_key()
-    if not key:
+def is_local(url: str) -> bool:
+    return any(host in url for host in ("localhost", "127.0.0.1", "::1"))
+
+
+def ask(system: str, user: str, *, max_tokens: int = 16000, timeout: int = 600,
+        base_url: str | None = None, model: str | None = None) -> dict | None:
+    """One request, returning the parsed object or None.
+
+    `base_url` pointed at a local server is the answer for code that must not
+    leave the machine. The endpoint speaks the same shape, so nothing else
+    changes - and a local server needs no key, which is why the key check is
+    skipped there rather than failing on a credential nobody needs.
+    """
+    config = dict(load_config())
+    if base_url:
+        config["api_url"] = base_url.rstrip("/") + "/chat/completions"
+    if model:
+        config["model"] = model
+
+    key = "" if is_local(config["api_url"]) else api_key()
+    if key is None:
         print("no OPENROUTER_API_KEY and no ../second-opinion/.env")
         return None
-
-    config = load_config()
 
     def attempt(prefill: str) -> str:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -85,10 +101,12 @@ def ask(system: str, user: str, *, max_tokens: int = 16000, timeout: int = 600) 
             # is the one job in this project where deliberation earns its tokens.
             "reasoning": {"enabled": True},
         }).encode("utf-8")
-        request = urllib.request.Request(config["api_url"], data=payload, headers={
-            "Authorization": f"Bearer {key}", "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/NehaTiwari25/Nemotron-3-Ultra-Claude",
-            "X-Title": "Claude handoff delegation"})
+        headers = {"Content-Type": "application/json",
+                   "HTTP-Referer": "https://github.com/NehaTiwari25/Nemotron-3-Ultra-Claude",
+                   "X-Title": "Claude handoff delegation"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        request = urllib.request.Request(config["api_url"], data=payload, headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
         message = (body.get("choices") or [{}])[0].get("message", {})
@@ -118,6 +136,26 @@ def ask(system: str, user: str, *, max_tokens: int = 16000, timeout: int = 600) 
     return None
 
 
+def locate_loosely(text: str, find: str) -> tuple[int, int] | None:
+    """Find `find` in `text` ignoring how much whitespace is between tokens.
+
+    Smaller models reproduce code correctly and space it wrong: `s   =` where
+    the file says `s =`. Byte-exact matching rejects those, and the model has no
+    way to see its own error - it re-reads the file it was given and writes the
+    same thing again. Three attempts, three identical rejections.
+
+    Relaxing only whitespace RUNS keeps the safety that matters: the match must
+    still be unique, and no amount of respacing turns one statement into a
+    different one. Indentation inside the matched span is taken from the file,
+    not from the model.
+    """
+    if not find.strip():
+        return None
+    pattern = r"\s+".join(re.escape(part) for part in find.split())
+    matches = list(re.finditer(pattern, text))
+    return (matches[0].start(), matches[0].end()) if len(matches) == 1 else None
+
+
 def apply_edits(path: Path, edits: list[dict]) -> tuple[bool, list[str]]:
     """All-or-nothing. A half-applied patch is worse than none."""
     text = original = path.read_text(encoding="utf-8")
@@ -126,12 +164,30 @@ def apply_edits(path: Path, edits: list[dict]) -> tuple[bool, list[str]]:
         find, replace = edit.get("find", ""), edit.get("replace", "")
         if not find:
             notes.append(f"edit {i}: empty anchor"); return False, notes
+
         count = text.count(find)
-        if count != 1:
+        if count == 1:
+            text = text.replace(find, replace, 1)
+            notes.append(f"edit {i}: applied ({len(find)} -> {len(replace)} chars)")
+            continue
+        if count > 1:
             notes.append(f"edit {i}: anchor appears {count} times, needs exactly 1")
             return False, notes
-        text = text.replace(find, replace, 1)
-        notes.append(f"edit {i}: applied ({len(find)} -> {len(replace)} chars)")
+
+        span = locate_loosely(text, find)
+        if span is None:
+            notes.append(f"edit {i}: anchor appears 0 times, needs exactly 1")
+            return False, notes
+        start, end = span
+        text = text[:start] + replace + text[end:]
+        # Loud, because the anchor is not the only thing the model respaced. The
+        # REPLACEMENT carries its spacing verbatim, and a model sloppy enough to
+        # need this path writes `s   =  x` into the file. The tests will not
+        # notice; a reviewer or a linter will.
+        notes.append(f"edit {i}: applied on a whitespace-tolerant match "
+                     f"({len(find)} -> {len(replace)} chars) - CHECK THE DIFF, "
+                     f"the replacement's formatting comes from the model")
+
     if text == original:
         notes.append("patch changed nothing"); return False, notes
     path.write_text(text, encoding="utf-8")
@@ -148,14 +204,15 @@ def failures(output: str) -> set[str]:
     """
     names = set()
     for line in output.splitlines():
-        stripped = line.strip()
-        if "FAILED:" in stripped:
-            names.add(stripped.split("FAILED:", 1)[1].strip())
-        elif stripped.startswith("FAIL"):
-            rest = stripped[4:].lstrip(":").strip()
-            if rest:
-                # Trim the runner's own " — detail" suffix; the name is the key.
-                names.add(rest.split(" — ")[0].split("  ")[0].strip())
+        match = re.match(r"^\s*(FAILED|FAIL)\b[:\s]\s*(.+)$", line)
+        if not match:
+            continue
+        # Trim each runner's trailing detail so the same check has one name:
+        # pytest's " - AssertionError", the Node suite's " — got 2".
+        name = re.split(r"\s+[-—]\s+", match.group(2).strip())[0]
+        name = name.split("  ")[0].strip()
+        if name:
+            names.add(name)
     return names
 
 
@@ -188,6 +245,10 @@ def main() -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--file", required=True, help="the one file Nemotron may change")
     parser.add_argument("--test", required=True, help="command that gates the patch")
+    parser.add_argument("--base-url", default=None,
+                        help="OpenAI-compatible endpoint; a localhost URL keeps "
+                             "the code on this machine and skips the allowlist")
+    parser.add_argument("--model", default=None, help="override the model id")
     parser.add_argument("--allow-unlisted", action="store_true",
                         help="send code from a project that is not allowlisted")
     parser.add_argument("--attempts", type=int, default=3,
@@ -206,7 +267,8 @@ def main() -> int:
     # third-party endpoint, so it needs the check MORE than the hook does, not
     # less - and it is invoked by hand, against whatever project you happen to be
     # standing in, which is exactly when the wrong one gets picked.
-    if not (project_allowed(str(project), load_config()) or args.allow_unlisted):
+    going_offsite = not is_local(args.base_url or load_config()["api_url"])
+    if going_offsite and not (project_allowed(str(project), load_config()) or args.allow_unlisted):
         print(f"{project} is not on the handoff allowlist, so its code will not be\n"
               f"sent anywhere. Add it to ~/.claude/handoff/config.json if it is\n"
               f"yours to share, or pass --allow-unlisted to override deliberately.\n\n"
@@ -253,7 +315,7 @@ def main() -> int:
         print(f"\n--- attempt {attempt} of {args.attempts} ---")
         prompt = base_prompt + feedback + (
             "Return the JSON object with your edits to the file above. Nothing else.")
-        response = ask(SYSTEM, prompt)
+        response = ask(SYSTEM, prompt, base_url=args.base_url, model=args.model)
         requests += 1
         if not response:
             print("  nothing usable came back; stopping")

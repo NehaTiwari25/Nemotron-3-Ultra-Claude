@@ -96,6 +96,48 @@ def test_apply_edits() -> None:
     check("partial patch is not written", not ok and path.read_text(encoding="utf-8") == "one\ntwo\n")
 
 
+def test_whitespace_tolerant_anchor() -> None:
+    """Small models get the code right and the spacing wrong.
+
+    Observed on the live run: `s   =` proposed against a file containing `s =`,
+    three times, because a byte-exact rejection gives the model nothing to
+    correct - it re-reads the same file and writes the same anchor again.
+    """
+    print("\nanchors survive respacing, but only when unique")
+    path = Path(tempfile.mkdtemp()) / "f.py"
+
+    path.write_text('    s = sub("_", (name or "").strip())\n    return s\n', encoding="utf-8")
+    ok, notes = delegate.apply_edits(path, [
+        {"find": '    s   =  sub("_",   (name or   "").strip())', "replace": "    s = 'fixed'"}])
+    check("respaced anchor still applies", ok, "; ".join(notes))
+    check("noted as a loose match", any("whitespace-tolerant" in n for n in notes))
+    check("replacement written", "'fixed'" in path.read_text(encoding="utf-8"))
+
+    # An EXACT unique match wins outright. The loose path is a fallback, so a
+    # well-formed anchor keeps working in a file that happens to hold a respaced
+    # near-twin - otherwise tightening the spacing elsewhere breaks good patches.
+    path.write_text("x = 1\nx  =  1\n", encoding="utf-8")
+    ok, notes = delegate.apply_edits(path, [{"find": "x = 1", "replace": "x = 2"}])
+    check("exact unique match wins over a respaced twin", ok)
+    check("it was the exact path, not the loose one",
+          not any("whitespace-tolerant" in n for n in notes))
+    check("only the exact line changed",
+          path.read_text(encoding="utf-8") == "x = 2\nx  =  1\n")
+
+    # Uniqueness still decides inside the fallback: no exact match, two loose
+    # candidates, so nothing is written.
+    before = "y  =  1\ny   =   1\n"
+    path.write_text(before, encoding="utf-8")
+    ok, _ = delegate.apply_edits(path, [{"find": "y = 1", "replace": "y = 2"}])
+    check("ambiguous loose match is refused", not ok)
+    check("file untouched when loosely ambiguous", path.read_text(encoding="utf-8") == before)
+
+    # Relaxing whitespace must not let a different statement match.
+    path.write_text("total = a + b\n", encoding="utf-8")
+    ok, _ = delegate.apply_edits(path, [{"find": "total = a - b", "replace": "total = 0"}])
+    check("different code still does not match", not ok)
+
+
 def test_failure_parsing() -> None:
     print("\nreading the gate's output")
     check("names extracted", delegate.failures("FAILED: a\nok\nFAILED: b") == {"a", "b"})
@@ -197,6 +239,7 @@ def test_passing_suite_is_not_delegated() -> None:
 def main() -> int:
     print("delegation loop tests")
     test_apply_edits()
+    test_whitespace_tolerant_anchor()
     test_failure_parsing()
     test_retry_succeeds_after_feedback()
     test_same_size_edit_is_not_hidden_by_stale_bytecode()
