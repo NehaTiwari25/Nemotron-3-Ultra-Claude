@@ -47,10 +47,30 @@ Each compaction costs **one** request.
 - **Never block compaction.** Every path exits 0, the API call has a hard timeout, and the body is wrapped. A hook that fails must not break the session it exists to help.
 - **cp1252 will eat the output.** The brief is full of em dashes; printing one to a Windows console raises, the catch-all swallows it, and the hook exits 0 having delivered nothing. stdout is reconfigured to UTF-8 first.
 
+## Delegation, and why it retries
+
+`delegate.py` gives Nemotron the brief, a failing test, and one file, and takes back find/replace edits. They're applied all-or-nothing, then the test suite decides.
+
+```bash
+python delegate.py --task "..." --file handoff.py --test "python test_handoff.py"
+```
+
+It retries up to `--attempts` (default 3), and the retry is where the value is: a first patch that applies cleanly but fixes the wrong thing is the common case, and it's only recoverable if the model is told what happened. Each failure goes back with the edits it tried, whether they applied, which checks it fixed, and which still fail.
+
+Two guards stop the loop wasting your allowance:
+
+- **Every attempt starts from the original file.** Stacking a second patch on a failed first one compounds a mistake instead of replacing it — and the model wrote its anchors against the original.
+- **An identical patch ends the loop.** The same edits fail the same way; paying a second request to watch that happen is the one thing a retry loop must never do.
+
+One non-obvious detail lives in `run()`: the test command executes with a throwaway bytecode cache. Python invalidates a `.pyc` by size and mtime, and a find/replace swapping one operator for another — `a - b` for `a + b`, the archetypal minimal fix — leaves the size identical while the retry loop rewrites the file within the same second. The suite then runs against **stale bytecode**, a correct patch is reported as a failure, and the model is sent hunting a bug that isn't there. Costs the whole retry budget, and there's nothing in the output to suggest why.
+
+It is still not an agent: no shell, no file discovery, one file, one action. Widening that is what makes a weak model dangerous — once it can edit the tests, the tests stop being a gate.
+
 ## Testing
 
 ```bash
 python test_handoff.py                       # 67 tests, no network, no API key
+python test_delegate.py                      # 22 tests, model stubbed
 python handoff.py test <transcript.jsonl>    # print a brief from a real transcript
 ```
 
